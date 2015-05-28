@@ -136,7 +136,8 @@ mlx4_netmap_reg(struct netmap_adapter *na, int onoff)
 			 *	!!(ring->cons & ring->size)
 			 */
 			for (i = 0; i < na->num_tx_rings; i++) {
-				struct mlx4_en_tx_ring *txr = &priv->tx_ring[i];
+				struct mlx4_en_tx_ring *txr = priv->tx_ring[i];
+
 				ND("txr %d : cons %d prod %d txbb %d", i, txr->cons, txr->prod, txr->last_nr_txbb);
 				txr->cons += txr->last_nr_txbb; // XXX should be 1
 				for (;txr->cons != txr->prod; txr->cons++) {
@@ -148,7 +149,7 @@ mlx4_netmap_reg(struct netmap_adapter *na, int onoff)
 				}
 			}
 		}
-		mlx4_en_stop_port(ifp);
+		mlx4_en_stop_port(ifp, 1);
 		need_load = 1;
 	}
 
@@ -202,11 +203,12 @@ same for rx_cq and rx_ring.
 
  */
 static int
-mlx4_netmap_txsync(struct netmap_adapter *na, u_int ring_nr, int flags)
+mlx4_netmap_txsync(struct netmap_kring *kring, int flags)
 {
+	struct netmap_adapter *na = kring->na;
 	struct ifnet *ifp = na->ifp;
-	struct netmap_kring *kring = &na->tx_rings[ring_nr];
 	struct netmap_ring *ring = kring->ring;
+	u_int ring_nr = kring->ring_id;
 	u_int nm_i;	/* index into the netmap ring */
 	u_int nic_i;	/* index into the NIC ring */
 	u_int n;
@@ -219,6 +221,8 @@ mlx4_netmap_txsync(struct netmap_adapter *na, u_int ring_nr, int flags)
 	u_int report_frequency = kring->nkr_num_slots >> 1;
 
 	struct SOFTC_T *priv = netdev_priv(ifp);
+        struct mlx4_en_tx_ring *txr = priv->tx_ring[ring_nr];
+
 	int error = 0;
 
 	if (!netif_carrier_ok(ifp)) {
@@ -264,7 +268,7 @@ mlx4_netmap_txsync(struct netmap_adapter *na, u_int ring_nr, int flags)
 			struct mlx4_en_tx_desc *tx_desc = txr->buf + l * TXBB_SIZE;
 			struct mlx4_wqe_ctrl_seg *ctrl = &tx_desc->ctrl;
 
-			NM_CHECK_ADDR_LEN(addr, len);
+			NM_CHECK_ADDR_LEN(na, addr, len);
 
 
 			if (slot->flags & NS_BUF_CHANGED) {
@@ -284,7 +288,7 @@ mlx4_netmap_txsync(struct netmap_adapter *na, u_int ring_nr, int flags)
 
 			// XXX do we need to copy the mac dst address ?
 			if (1) { // XXX do we need this ?
-				uint64_t mac = mlx4_en_mac_to_u64(addr);
+				uint64_t mac = mlx4_mac_to_u64(addr);
 				uint32_t mac_h = (u32) ((mac & 0xffff00000000ULL) >> 16);
 				uint32_t mac_l = (u32) (mac & 0xffffffff);
 
@@ -323,7 +327,7 @@ mlx4_netmap_txsync(struct netmap_adapter *na, u_int ring_nr, int flags)
 	 */
 
     {
-	struct mlx4_en_cq *cq = &priv->tx_cq[ring_nr];
+	struct mlx4_en_cq *cq = priv->tx_cq[ring_nr];
 	struct mlx4_cq *mcq = &cq->mcq;
 
 	int size = cq->size;			// number of entries
@@ -409,11 +413,12 @@ mlx4_en_update_rx_prod_db() tells the NIC where it can go
  
  */
 static int
-mlx4_netmap_rxsync(struct netmap_adapter *na, u_int ring_nr, int flags)
+mlx4_netmap_rxsync(struct netmap_kring *kring, int flags)
 {
+	struct netmap_adapter *na = kring->na;
 	struct ifnet *ifp = na->ifp;
-	struct netmap_kring *kring = &na->rx_rings[ring_nr];
 	struct netmap_ring *ring = kring->ring;
+	u_int ring_nr = kring->ring_id;
 	u_int nm_i;	/* index into the netmap ring */
 	u_int nic_i;	/* index into the NIC ring */
 	u_int n;
@@ -422,7 +427,7 @@ mlx4_netmap_rxsync(struct netmap_adapter *na, u_int ring_nr, int flags)
 	int force_update = (flags & NAF_FORCE_READ) || kring->nr_kflags & NKR_PENDINTR;
 
 	struct SOFTC_T *priv = netdev_priv(ifp);
-	struct mlx4_en_rx_ring *rxr = &priv->rx_ring[ring_nr];
+	struct mlx4_en_rx_ring *rxr = priv->rx_ring[ring_nr];
 
         if (!priv->port_up)	// XXX as in mlx4_en_process_rx_cq()
                 return 0;
@@ -458,7 +463,7 @@ mlx4_netmap_rxsync(struct netmap_adapter *na, u_int ring_nr, int flags)
 	if (1 || netmap_no_pendintr || force_update) {
 		uint16_t slot_flags = kring->nkr_slot_flags;
 
-		struct mlx4_en_cq *cq = &priv->rx_cq[ring_nr];
+		struct mlx4_en_cq *cq = priv->rx_cq[ring_nr];
 		struct mlx4_cq *mcq = &cq->mcq;
 		int factor = priv->cqe_factor;
 		uint32_t size_mask = rxr->size_mask;
@@ -504,7 +509,7 @@ mlx4_netmap_rxsync(struct netmap_adapter *na, u_int ring_nr, int flags)
 	if (nm_i != head) { /* userspace has released some packets. */
 		nic_i = netmap_idx_k2n(kring, nm_i);
 		for (n = 0; nm_i != head; n++) {
-			/* collect per-slot info, with similar validations
+			/* collect per-slot info, with similar validations */
 			struct netmap_slot *slot = &ring->slot[nm_i];
 			uint64_t paddr;
 			void *addr = PNMB(na, slot, &paddr);
@@ -525,7 +530,7 @@ mlx4_netmap_rxsync(struct netmap_adapter *na, u_int ring_nr, int flags)
 			 */
 			// see mlx4_en_prepare_rx_desc() and mlx4_en_alloc_frag()
 			rx_desc->data[0].addr = cpu_to_be64(paddr);
-			rx_desc->data[0].byte_count = cpu_to_be32(NETMAP_BUF_SIZE);
+			rx_desc->data[0].byte_count = cpu_to_be32(NETMAP_BUF_SIZE(na));
 			rx_desc->data[0].lkey = cpu_to_be32(priv->mdev->mr.key);
 
 #if 0
@@ -600,7 +605,7 @@ mlx4_netmap_tx_config(struct SOFTC_T *priv, int ring_nr)
 		na->num_tx_desc,
 		priv->tx_ring[ring_nr].size);
 	/* enable interrupts on the netmap queues */
-	cq = &priv->tx_cq[ring_nr];	// derive from the txring
+	cq = priv->tx_cq[ring_nr];	// derive from the txring
 
 	return 1;
 }
@@ -626,7 +631,7 @@ mlx4_netmap_rx_config(struct SOFTC_T *priv, int ring_nr)
 	if (!slot)
 		return 0;	// not in native netmap mode
 	kring = &na->rx_rings[ring_nr];
-	rxr = &priv->rx_ring[ring_nr];
+	rxr = priv->rx_ring[ring_nr];
 	ND(20, "ring %d slots %d (driver says %d) frags %d stride %d", ring_nr,
 		kring->nkr_num_slots, rxr->actual_size, priv->num_frags, rxr->stride);
 	rxr->prod--;	// XXX avoid wraparounds ?
@@ -646,7 +651,7 @@ mlx4_netmap_rx_config(struct SOFTC_T *priv, int ring_nr)
 
 		// see mlx4_en_prepare_rx_desc() and mlx4_en_alloc_frag()
 		rx_desc->data[0].addr = cpu_to_be64(paddr);
-		rx_desc->data[0].byte_count = cpu_to_be32(NETMAP_BUF_SIZE);
+		rx_desc->data[0].byte_count = cpu_to_be32(NETMAP_BUF_SIZE(na));
 		rx_desc->data[0].lkey = cpu_to_be32(priv->mdev->mr.key);
 
 		/* we only use one fragment, so the rest is padding */
@@ -668,7 +673,7 @@ mlx4_netmap_config(struct netmap_adapter *na,
 	struct SOFTC_T *priv = netdev_priv(ifp);
 
 	*txr = priv->tx_ring_num;
-	*txd = priv->tx_ring[0].size;
+	*txd = priv->tx_ring[0]->size;
 
 
 	*rxr = priv->rx_ring_num;
@@ -676,11 +681,11 @@ mlx4_netmap_config(struct netmap_adapter *na,
 		D("using only %d out of %d tx queues", *rxr, *txr);
 		*txr = *rxr;
 	}
-	*rxd = priv->rx_ring[0].size;
+	*rxd = priv->rx_ring[0]->size;
 	D("txr %d txd %d bufsize %d -- rxr %d rxd %d act %d bufsize %d",
-		*txr, *txd, priv->tx_ring[0].buf_size,
-		*rxr, *rxd, priv->rx_ring[0].actual_size,
-			priv->rx_ring[0].buf_size);
+		*txr, *txd, priv->tx_ring[0]->buf_size,
+		*rxr, *rxd, priv->rx_ring[0]->actual_size,
+			priv->rx_ring[0]->buf_size);
 	return 0;
 }
 
@@ -705,7 +710,7 @@ mlx4_netmap_attach(struct SOFTC_T *priv)
 	bzero(&na, sizeof(na));
 
 	na.ifp = dev;
-	na.pdev = &priv->pdev->dev;
+	na.pdev = &priv->mdev->pdev->dev;
 	rxq = priv->rx_ring_num;
 	txq = priv->tx_ring_num;
 	/* this card has 1k tx queues, so better limit the number */
@@ -717,8 +722,8 @@ mlx4_netmap_attach(struct SOFTC_T *priv)
 		txq = rxq = 1;
 	na.num_tx_rings = txq;
 	na.num_rx_rings = rxq;
-	na.num_tx_desc = priv->tx_ring[0].size;
-	na.num_rx_desc = priv->rx_ring[0].size;
+	na.num_tx_desc = priv->tx_ring[0]->size;
+	na.num_rx_desc = priv->rx_ring[0]->size;
 	na.nm_txsync = mlx4_netmap_txsync;
 	na.nm_rxsync = mlx4_netmap_rxsync;
 	na.nm_register = mlx4_netmap_reg;
