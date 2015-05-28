@@ -51,30 +51,40 @@ diff -urp --exclude '*.o' --exclude '*.cmd' --exclude '*mod.c' drivers/net/ether
  		++tx_index;
  	}
  
-@@ -1639,6 +1675,9 @@ int mlx4_en_init_netdev(struct mlx4_en_d
- 	en_warn(priv, "Using %d RX rings\n", prof->rx_ring_num);
+@@ -2703,6 +2703,10 @@
+ 		queue_delayed_work(mdev->workqueue, &priv->service_task,
+ 				   SERVICE_TASK_DELAY);
  
- 	queue_delayed_work(mdev->workqueue, &priv->stats_task, STATS_DELAY);
 +#ifdef DEV_NETMAP
 +	mlx4_netmap_attach(priv);
 +#endif /* DEV_NETMAP */
++
  	return 0;
  
  out:
---- drivers/net/ethernet/mellanox/mlx4/en_rx.c	2012-09-11 20:50:55.982624673 -0700
-+++ ./mlx4/en_rx.c	2012-09-27 00:13:16.099550954 -0700
-@@ -41,6 +41,9 @@
+--- drivers/net/ethernet/mellanox/mlx4/en_rx.c	2015-05-27 08:13:51.000000000 -0600
++++ ./mlx4/en_rx.c	2015-05-27 23:03:23.515569963 -0600
+@@ -44,6 +44,10 @@
  
  #include "mlx4_en.h"
  
 +#if defined(CONFIG_NETMAP) || defined(CONFIG_NETMAP_MODULE)
 +#include <mlx4_netmap_linux.h>
 +#endif /* !DEV_NETMAP */
++
+ static int mlx4_alloc_pages(struct mlx4_en_priv *priv,
+ 			    struct mlx4_en_rx_alloc *page_alloc,
+ 			    const struct mlx4_en_frag_info *frag_info,
+@@ -138,7 +142,6 @@
+ 	const struct mlx4_en_frag_info *frag_info = &priv->frag_info[i];
+ 	u32 next_frag_end = frags[i].page_offset + 2 * frag_info->frag_stride;
  
- static int mlx4_en_alloc_frag(struct mlx4_en_priv *priv,
- 			      struct mlx4_en_rx_desc *rx_desc,
-@@ -365,9 +368,16 @@ int mlx4_en_activate_rx_rings(struct mlx
- 		ring = &priv->rx_ring[ring_ind];
+-
+ 	if (next_frag_end > frags[i].page_size)
+ 		dma_unmap_page(priv->ddev, frags[i].dma, frags[i].page_size,
+ 			       PCI_DMA_FROMDEVICE);
+@@ -466,9 +469,16 @@
+ 		ring = priv->rx_ring[ring_ind];
  
  		ring->size_mask = ring->actual_size - 1;
 +#ifdef DEV_NETMAP
@@ -91,7 +101,7 @@ diff -urp --exclude '*.o' --exclude '*.cmd' --exclude '*mod.c' drivers/net/ether
  	return 0;
  
  err_buffers:
-@@ -402,6 +412,11 @@ void mlx4_en_destroy_rx_ring(struct mlx4
+@@ -507,6 +517,11 @@
  void mlx4_en_deactivate_rx_ring(struct mlx4_en_priv *priv,
  				struct mlx4_en_rx_ring *ring)
  {
@@ -103,23 +113,22 @@ diff -urp --exclude '*.o' --exclude '*.cmd' --exclude '*mod.c' drivers/net/ether
  	mlx4_en_free_rx_buf(priv, ring);
  	if (ring->stride <= TXBB_SIZE)
  		ring->buf -= TXBB_SIZE;
-@@ -692,6 +707,12 @@ out:
+@@ -864,6 +879,10 @@
  	wmb(); /* ensure HW sees CQ consumer before we post new buffers */
- 	ring->cons = mcq->cons_index;
- 	ring->prod += polled; /* Polled descriptors were realocated in place */
-+
+ 	ring->cons = cq->mcq.cons_index;
+ 	mlx4_en_refill_rx_buffers(priv, ring);
 +	ND(5, "set_ci %d 0x%p val %d prod_db 0x%p val %d",
 +		cq->ring,
 +		mcq->set_ci_db, mcq->cons_index & 0xffffff,
 +		ring->wqres.db.db, ring->prod & 0xffff);
-+
  	mlx4_en_update_rx_prod_db(ring);
- 	ring->csum_ok += csum_ok;
- 	ring->csum_none += csum_none;
-@@ -718,6 +739,13 @@ int mlx4_en_poll_rx_cq(struct napi_struc
- 	struct mlx4_en_priv *priv = netdev_priv(dev);
- 	int done;
+ 	return polled;
+ }
+@@ -891,7 +910,14 @@
+ 	if (!mlx4_en_cq_lock_napi(cq))
+ 		return budget;
  
+-	done = mlx4_en_process_rx_cq(dev, cq, budget);
 +#ifdef DEV_NETMAP
 +        static int cnt = 0;
 +        ND(5,"XXXXXX-------XXXXXXXXXXX-------- poll-rx-cq %d count %d", (int)cq->ring, cnt++);
@@ -127,26 +136,27 @@ diff -urp --exclude '*.o' --exclude '*.cmd' --exclude '*mod.c' drivers/net/ether
 +		ND("rx_irq %d for netmap, budget %d done %d", cq->ring, budget, done);
 +	} else
 +#endif /* DEV_NETMAP */
- 	done = mlx4_en_process_rx_cq(dev, cq, budget);
++		done = mlx4_en_process_rx_cq(dev, cq, budget);
  
- 	/* If we used up all the quota - we're probably not done yet... */
---- drivers/net/ethernet/mellanox/mlx4/en_tx.c	2012-09-11 20:50:55.982624673 -0700
-+++ ./mlx4/en_tx.c	2012-09-27 00:05:22.713523348 -0700
-@@ -55,6 +55,10 @@ MODULE_PARM_DESC(inline_thold, "threshol
+ 	mlx4_en_cq_unlock_napi(cq);
  
- static u32 hashrnd __read_mostly;
+--- drivers/net/ethernet/mellanox/mlx4/en_tx.c	2015-05-27 08:13:51.000000000 -0600
++++ ./mlx4/en_tx.c	2015-05-27 23:08:27.311584016 -0600
+@@ -44,6 +44,10 @@
+ 
+ #include "mlx4_en.h"
  
 +#if defined(CONFIG_NETMAP) || defined(CONFIG_NETMAP_MODULE)
 +#include <mlx4_netmap_linux.h>        /* extern stuff */
 +#endif /* CONFIG_NETMAP */
 +
  int mlx4_en_create_tx_ring(struct mlx4_en_priv *priv,
- 			   struct mlx4_en_tx_ring *ring, u32 size,
- 			   u16 stride)
-@@ -396,6 +400,17 @@ void mlx4_en_tx_irq(struct mlx4_cq *mcq)
+ 			   struct mlx4_en_tx_ring **pring, int qpn, u32 size,
+ 			   u16 stride, int node, int queue_index)
+@@ -460,6 +464,17 @@
+ 	struct mlx4_en_cq *cq = container_of(mcq, struct mlx4_en_cq, mcq);
+ 	struct mlx4_en_priv *priv = netdev_priv(cq->dev);
  
- 	if (!spin_trylock(&ring->comp_lock))
- 		return;
 +#ifdef DEV_NETMAP // XXX unlock and return should be in the 'if' branch
 +	static int cnt = 0;
 +	ND(5,"XXXXXX-------XXXXXXXXXXX-------- tx-irq %d count %d", (int)cq->ring, cnt++);
@@ -155,9 +165,9 @@ diff -urp --exclude '*.o' --exclude '*.cmd' --exclude '*mod.c' drivers/net/ether
 +	} else {
 +		RD(5, "XXXXXXXXX  tx_irq %d unexpected, ignoring", cq->ring);
 +	}
-+	spin_unlock(&ring->comp_lock);
 +	return;
 +#endif /* DEV_NETMAP */
- 	mlx4_en_process_tx_cq(cq->dev, cq);
- 	mod_timer(&cq->timer, jiffies + 1);
- 	spin_unlock(&ring->comp_lock);
++
+ 	if (priv->port_up)
+ 		napi_schedule(&cq->napi);
+ 	else
