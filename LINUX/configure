@@ -87,7 +87,7 @@ subsys enable generic
 
 # available drivers
 driver_avail="r8169.c virtio_net.c forcedeth.c \
-	e1000 e1000e igb ixgbe"
+	e1000 e1000e igb ixgbe mlx4"
 # enabled drivers (bitfield)
 driver=
 
@@ -531,7 +531,7 @@ for p in $patches; do
 	# skip this driver if the user does not want it
 	drv enabled $d || continue
 	# find the driver sources
-	s=$(find $src/drivers/ -name "$d" -print -quit)
+	s=$(find $src/drivers/net -name "$d" -print -quit)
 	[ -n "$s" ] || { 
 		echo "$d sources not found" | warning
 		drv disable $d
@@ -542,7 +542,11 @@ for p in $patches; do
 	# (we do this mainly to be sure that any module dependency has already
 	#  been taken care of)
 	# XXX maybe add a (per driver?) flag to force compilation anyway
-	drv_conf="CONFIG_$(basename $d .c | tr a-z A-Z)"
+	if [ "$d" = "mlx4" ]; then
+		drv_conf="CONFIG_MLX4_EN"
+	else
+		drv_conf="CONFIG_$(basename $d .c | tr a-z A-Z)"
+	fi
 	m="$(eval echo \$$drv_conf)"
 	[ -n "$m" ] || {
 		echo "$drv_conf not set in $ksrc/.config, skipping $d" | warning
