@@ -62,8 +62,42 @@ diff -urp --exclude '*.o' --exclude '*.cmd' --exclude '*mod.c' drivers/net/ether
  	return 0;
  
  out:
---- drivers/net/ethernet/mellanox/mlx4/en_rx.c	2015-05-27 08:13:51.000000000 -0600
-+++ ./mlx4/en_rx.c	2015-05-27 23:03:23.515569963 -0600
+--- drivers/net/ethernet/mellanox/mlx4/en_tx.c	2015-05-31 16:51:42.000000000 -0600
++++ ./mlx4/en_tx.c	2015-06-01 14:50:37.610330867 -0600
+@@ -44,6 +44,10 @@
+ 
+ #include "mlx4_en.h"
+ 
++#if defined(CONFIG_NETMAP) || defined(CONFIG_NETMAP_MODULE)
++#include <mlx4_netmap_linux.h>        /* extern stuff */
++#endif /* CONFIG_NETMAP */
++
+ int mlx4_en_create_tx_ring(struct mlx4_en_priv *priv,
+ 			   struct mlx4_en_tx_ring **pring, int qpn, u32 size,
+ 			   u16 stride, int node, int queue_index)
+@@ -460,8 +464,19 @@
+ 	struct mlx4_en_cq *cq = container_of(mcq, struct mlx4_en_cq, mcq);
+ 	struct mlx4_en_priv *priv = netdev_priv(cq->dev);
+ 
+-	if (priv->port_up)
++	if (priv->port_up) {
++#ifdef DEV_NETMAP
++		static int cnt = 0;
++		ND(5,"XXXXXX-------XXXXXXXXXXX-------- tx-irq %d count %d", (int)cq->ring, cnt++);
++		if (netmap_tx_irq(cq->dev, cq->ring)) {
++			ND(5, "wakeup queue %d", cq->ring);
++			return;
++		} else {
++			RD(5, "XXXXXXXXX  tx_irq %d unexpected, ignoring", cq->ring);
++		}
++#endif /* DEV_NETMAP */
+ 		napi_schedule(&cq->napi);
++	}
+ 	else
+ 		mlx4_en_arm_cq(priv, cq);
+ }
+--- drivers/net/ethernet/mellanox/mlx4/en_rx.c	2015-05-31 16:51:42.000000000 -0600
++++ ./mlx4/en_rx.c	2015-06-01 01:08:09.344226307 -0600
 @@ -44,6 +44,10 @@
  
  #include "mlx4_en.h"
@@ -124,7 +158,25 @@ diff -urp --exclude '*.o' --exclude '*.cmd' --exclude '*mod.c' drivers/net/ether
  	mlx4_en_update_rx_prod_db(ring);
  	return polled;
  }
-@@ -891,7 +910,14 @@
+@@ -874,6 +893,17 @@
+ 	struct mlx4_en_cq *cq = container_of(mcq, struct mlx4_en_cq, mcq);
+ 	struct mlx4_en_priv *priv = netdev_priv(cq->dev);
+ 
++#ifdef DEV_NETMAP
++	int dummy;
++        ND(5,"XXXXXX-------XXXXXXXXXXX-------- rx-irq %d", (int)cq->ring);
++        if (netmap_rx_irq(cq->dev, cq->ring, &dummy)) {
++                ND(5, "wakeup queue %d", cq->ring);
++                return;
++        } else {
++                RD(5, "XXXXXXXXX  rx_irq %d unexpected, ignoring", cq->ring);
++        }
++#endif /* DEV_NETMAP */
++
+ 	if (priv->port_up)
+ 		napi_schedule(&cq->napi);
+ 	else
+@@ -891,7 +921,14 @@
  	if (!mlx4_en_cq_lock_napi(cq))
  		return budget;
  
@@ -140,34 +192,3 @@ diff -urp --exclude '*.o' --exclude '*.cmd' --exclude '*mod.c' drivers/net/ether
  
  	mlx4_en_cq_unlock_napi(cq);
  
---- drivers/net/ethernet/mellanox/mlx4/en_tx.c	2015-05-27 08:13:51.000000000 -0600
-+++ ./mlx4/en_tx.c	2015-05-27 23:08:27.311584016 -0600
-@@ -44,6 +44,10 @@
- 
- #include "mlx4_en.h"
- 
-+#if defined(CONFIG_NETMAP) || defined(CONFIG_NETMAP_MODULE)
-+#include <mlx4_netmap_linux.h>        /* extern stuff */
-+#endif /* CONFIG_NETMAP */
-+
- int mlx4_en_create_tx_ring(struct mlx4_en_priv *priv,
- 			   struct mlx4_en_tx_ring **pring, int qpn, u32 size,
- 			   u16 stride, int node, int queue_index)
-@@ -460,6 +464,17 @@
- 	struct mlx4_en_cq *cq = container_of(mcq, struct mlx4_en_cq, mcq);
- 	struct mlx4_en_priv *priv = netdev_priv(cq->dev);
- 
-+#ifdef DEV_NETMAP // XXX unlock and return should be in the 'if' branch
-+	static int cnt = 0;
-+	ND(5,"XXXXXX-------XXXXXXXXXXX-------- tx-irq %d count %d", (int)cq->ring, cnt++);
-+	if (netmap_tx_irq(cq->dev, cq->ring)) {
-+		ND(5, "wakeup queue %d", cq->ring);
-+	} else {
-+		RD(5, "XXXXXXXXX  tx_irq %d unexpected, ignoring", cq->ring);
-+	}
-+	return;
-+#endif /* DEV_NETMAP */
-+
- 	if (priv->port_up)
- 		napi_schedule(&cq->napi);
- 	else
